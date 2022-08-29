@@ -1,0 +1,440 @@
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 1   
+
+
+C51 COMPILER V9.57.0.0, COMPILATION OF MODULE __________TONGXUN
+OBJECT MODULE PLACED IN 发生器程序tongxun.OBJ
+COMPILER INVOKED BY: D:\C51 keil\C51\BIN\C51.EXE 发生器程序tongxun.c OPTIMIZE(8,SPEED) BROWSE DEBUG OBJECTEXTEND TABS(2)
+
+line level    source
+
+   1          #include<regx52.h>
+   2          #include<math.h>
+   3          /*流量控制器1-8的测量值*/
+   4          sbit AD7705_U2_Rst=P1^0;
+   5          sbit AD7705_U2_DIN_DOUT=P1^1;
+   6          sbit AD7705_U2_SCLK=P1^2;
+   7          sbit AD7705_U2_DRDY=P1^3;
+   8          /*压力变送器，温度变送器，湿度变送器，呼吸机温度变送器，预留4路变送器*/
+   9          sbit AD7705_U11_Rst=P1^4;
+  10          sbit AD7705_U11_DIN_DOUT=P1^5;
+  11          sbit AD7705_U11_SCLK=P1^6;
+  12          sbit AD7705_U11_DRDY=P1^7;
+  13          /*流量控制器1-8的控制量*/
+  14          sbit MAX531_U6_DIN=P3^3;
+  15          sbit MAX531_U6_SCLK=P2^4;
+  16          sbit MAX531_U6_CS=P2^3;
+  17          /*IV型测压电磁阀的控制量*/
+  18          sbit DCF1389=P0^3;
+  19          sbit DCF4567=P0^7;
+  20          /*IV型吹洗电磁阀的控制量*/
+  21          sbit DCF2=P3^2;
+  22          /****74LS138控制8路质量流量输出切换****/
+  23          sbit a_bit=P2^5;
+  24          sbit b_bit=P2^6;
+  25          sbit c_bit=P2^7;
+  26          sbit en_bit=P3^5;
+  27          
+  28          unsigned char OutputData[5];/*向串口发送的每位数据*/
+  29          unsigned char Input_ch[24];/*IV型 串口接收的每位数据，8个变量*3=24*/
+  30          unsigned char ch_No,ch;
+  31          unsigned int InputData[8]; /*IV型 接收上位机的8个完整信息*/
+  32          unsigned int AD7705_Data;  /*AD转换后的数字量*/
+  33          unsigned int controlData[6];  /*IV型 6个流量控制DA值*/
+  34          unsigned char CD4051_U1_U13[8]={0xf8,0xf9,0xfa,0xfb,0xfc,0xfd,0xfe,0xff}; /*U1,U13--CD4051通道切换的地址信
+             -息*/
+  35          unsigned char CD4051_U9[8]={0x8f,0x9f,0xaf,0xbf,0xcf,0xdf,0xef,0xff};  /*U9--CD4051通道切换的地址信息*/
+  36          float templiuliang;     /*用于计算质量控制器流量的临时变量*/
+  37          float flag;        /*上位机是否开始通讯判断位*/
+  38          
+  39          
+  40          /***向MAX531_U6和U12写2字节数据***/
+  41          void MAX531_U6_Write(unsigned int SetWord)
+  42          {
+  43   1        unsigned char i;
+  44   1        for(i=0;i<4;i++)
+  45   1        {
+  46   2          SetWord=SetWord<<1;
+  47   2        }
+  48   1      
+  49   1        MAX531_U6_SCLK=1;
+  50   1        MAX531_U6_CS=0;
+  51   1        for(i=0;i<12;i++)
+  52   1        {
+  53   2          MAX531_U6_SCLK=0;
+  54   2          if(SetWord&0x8000)
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 2   
+
+  55   2            MAX531_U6_DIN=1;
+  56   2          else
+  57   2            MAX531_U6_DIN=0;
+  58   2          SetWord=SetWord<<1;
+  59   2          MAX531_U6_SCLK=1;
+  60   2        }
+  61   1        MAX531_U6_CS=1;
+  62   1        MAX531_U6_SCLK=1;
+  63   1        MAX531_U6_DIN=0;
+  64   1      }
+  65          /***串口初始化***/
+  66          void UartInit()
+  67          {
+  68   1        SCON=0x50;    //SCON: serail mode 1, 8-bit UART
+  69   1        TMOD=0x20;      //TMOD: timer 1, mode 2, 8-bit reload
+  70   1        PCON=0x00;      //SMOD="1";
+  71   1        TH1=0xFD;       //Baud:0XFA:4800;0XFD9600 fosc="11".0592MHz
+  72   1        TL1=0xFD;
+  73   1        IE=0x90;  //串口中断允许
+  74   1        TR1=1;          //启动TIMER1
+  75   1      }
+  76          
+  77          /***向AD7705_U2写8位数据***/
+  78          void AD7705_U2_Write(unsigned char SetWord)
+  79          {
+  80   1        unsigned char i;
+  81   1        AD7705_U2_SCLK=1;
+  82   1        for(i=0;i<8;i++)
+  83   1        {
+  84   2          AD7705_U2_SCLK=0;
+  85   2          if(SetWord&0x80)
+  86   2            AD7705_U2_DIN_DOUT=1;
+  87   2          else
+  88   2            AD7705_U2_DIN_DOUT=0;
+  89   2          SetWord=SetWord<<1;
+  90   2          AD7705_U2_SCLK=1;
+  91   2        }
+  92   1        AD7705_U2_SCLK=1;
+  93   1      }
+  94          /***向AD7705_U11写8位数据***/
+  95          void AD7705_U11_Write(unsigned char SetWord)
+  96          {
+  97   1        unsigned char i;
+  98   1        AD7705_U11_SCLK=1;
+  99   1        for(i=0;i<8;i++)
+ 100   1        {
+ 101   2          AD7705_U11_SCLK=0;
+ 102   2          if(SetWord&0x80)
+ 103   2            AD7705_U11_DIN_DOUT=1;
+ 104   2          else
+ 105   2            AD7705_U11_DIN_DOUT=0;
+ 106   2          SetWord=SetWord<<1;
+ 107   2          AD7705_U11_SCLK=1;
+ 108   2        }
+ 109   1        AD7705_U11_SCLK=1;
+ 110   1      }
+ 111          
+ 112          /***AD7705_U2设置***/
+ 113          void AD7705_U2_Set(void)
+ 114          { //设置通道1
+ 115   1        AD7705_U2_Write(0x20);
+ 116   1        AD7705_U2_Write(0x0c);    //时钟寄存器
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 3   
+
+ 117   1        AD7705_U2_Write(0x10);
+ 118   1        AD7705_U2_Write(0x40);    //设置寄存器，增益为1，双极性
+ 119   1      }
+ 120          /***AD7705_U11设置***/
+ 121          void AD7705_U11_Set(void)
+ 122          { //设置通道1
+ 123   1        AD7705_U11_Write(0x20);
+ 124   1        AD7705_U11_Write(0x0c);   //时钟寄存器
+ 125   1        AD7705_U11_Write(0x10);
+ 126   1        AD7705_U11_Write(0x40);   //设置寄存器，增益为1，双极性
+ 127   1      }
+ 128          
+ 129          /***从AD7705_U2读取16位数据***/
+ 130          unsigned int AD7705_U2_Read(void)
+ 131          {
+ 132   1        unsigned char i;
+ 133   1        unsigned int ADData;
+ 134   1        AD7705_U2_Write(0x38);
+ 135   1        while(AD7705_U2_DRDY==1);
+ 136   1        ADData=0;
+ 137   1        AD7705_U2_SCLK=1;
+ 138   1        for(i=0;i<16;i++)
+ 139   1        {
+ 140   2          AD7705_U2_DIN_DOUT=1;
+ 141   2          AD7705_U2_SCLK=0;
+ 142   2          ADData=ADData<<1;
+ 143   2          ADData=(ADData|AD7705_U2_DIN_DOUT);
+ 144   2          AD7705_U2_SCLK=1;
+ 145   2        }
+ 146   1        AD7705_U2_SCLK=1;
+ 147   1        return(ADData);
+ 148   1      }
+ 149          /***从AD7705_U11读取16位数据***/
+ 150          unsigned int AD7705_U11_Read(void)
+ 151          {
+ 152   1        unsigned char i;
+ 153   1        unsigned int ADData;
+ 154   1        AD7705_U11_Write(0x38);
+ 155   1        while(AD7705_U11_DRDY==1);
+ 156   1        ADData=0;
+ 157   1        AD7705_U11_SCLK=1;
+ 158   1        for(i=0;i<16;i++)
+ 159   1        {
+ 160   2          AD7705_U11_DIN_DOUT=1;
+ 161   2          AD7705_U11_SCLK=0;
+ 162   2          ADData=ADData<<1;
+ 163   2          ADData=(ADData|AD7705_U11_DIN_DOUT);
+ 164   2          AD7705_U11_SCLK=1;
+ 165   2        }
+ 166   1        AD7705_U11_SCLK=1;
+ 167   1        return(ADData);
+ 168   1      }
+ 169          
+ 170          /***复位AD7705_U2***/
+ 171          void AD7705_U2_Reset(void)
+ 172          {
+ 173   1        unsigned char i;
+ 174   1        AD7705_U2_SCLK=1;
+ 175   1        AD7705_U2_DIN_DOUT=1;
+ 176   1        AD7705_U2_Rst=1;
+ 177   1        for(i=0;i<56;i++)
+ 178   1        {
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 4   
+
+ 179   2          AD7705_U2_SCLK=0;
+ 180   2          AD7705_U2_DIN_DOUT=1;
+ 181   2          AD7705_U2_SCLK=1;
+ 182   2        }
+ 183   1        AD7705_U2_SCLK=1;
+ 184   1      }
+ 185          /***复位AD7705_U11***/
+ 186          void AD7705_U11_Reset(void)
+ 187          {
+ 188   1        unsigned char i;
+ 189   1        AD7705_U11_SCLK=1;
+ 190   1        AD7705_U11_DIN_DOUT=1;
+ 191   1        AD7705_U11_Rst=1;
+ 192   1        for(i=0;i<56;i++)
+ 193   1        {
+ 194   2          AD7705_U11_SCLK=0;
+ 195   2          AD7705_U11_DIN_DOUT=1;
+ 196   2          AD7705_U11_SCLK=1;
+ 197   2        }
+ 198   1        AD7705_U11_SCLK=1;
+ 199   1      }
+ 200          
+ 201          /***发送单个字符***/
+ 202          void UartSendChar(unsigned char ch)
+ 203          {
+ 204   1          SBUF=ch;
+ 205   1          while(TI==0);
+ 206   1          TI=0;
+ 207   1      }
+ 208          void delay(unsigned int n)
+ 209          {unsigned int i,j;
+ 210   1         for(i=0;i<n;i++){j=0;}
+ 211   1      }
+ 212          /***接受、处理字符串***/
+ 213          void UartSrv()interrupt 4
+ 214          {
+ 215   1        ch=SBUF;
+ 216   1          if((0x39>=ch)&&(ch>=0x30)) {ch=ch-0x30;}
+ 217   1          if(ch==0x20) {ch=0;}
+ 218   1        if(RI==1)
+ 219   1        {
+ 220   2          RI=0;
+ 221   2          if(ch_No>=24) {ch_No=0;}  //判断接收数据个数
+ 222   2          Input_ch[ch_No]=ch;
+ 223   2          ch_No++;
+ 224   2        }
+ 225   1        flag=0;
+ 226   1      }
+ 227          /***主程序***/
+ 228          void main(void)
+ 229          {
+ 230   1        unsigned char i,tempp2,tempp0;
+ 231   1        for(i=0;i<24;i++)
+ 232   1            {Input_ch[i]=0;}/*检测值清0*/
+ 233   1        ch_No=0;
+ 234   1          for(i=0;i<8;i++)
+ 235   1            {InputData[i]=0;}
+ 236   1        for(i=0;i<5;i++)
+ 237   1          {OutputData[i]=0;}
+ 238   1          UartInit();
+ 239   1          en_bit=0;
+ 240   1        a_bit=0;
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 5   
+
+ 241   1        b_bit=0;
+ 242   1        c_bit=0;
+ 243   1          DCF1389=1; //IV型默认阀断电，通气
+ 244   1        DCF4567=1; //IV型默认阀断电，通气
+ 245   1        DCF2=1;    //IV型默认阀断电，不通气 
+ 246   1        flag=0;
+ 247   1        while(1)
+ 248   1        {
+ 249   2             templiuliang=0.0;
+ 250   2             for(i=0;i<8;i++)
+ 251   2                 {InputData[i]=Input_ch[i*3]*100+Input_ch[i*3+1]*10+Input_ch[i*3+2];
+ 252   3             }
+ 253   2             if(InputData[0]==222){
+ 254   3             DCF2=0;
+ 255   3             DCF1389=1;
+ 256   3             DCF4567=1;
+ 257   3             flag=1;} //IV型吹洗功能 DCF2上电，通气
+ 258   2             if(InputData[0]==555){
+ 259   3             DCF1389=0;
+ 260   3             DCF4567=0;
+ 261   3             DCF2=1;
+ 262   3             flag=1;}  //IV型测试压力功能 DCF1389上电，不通气
+ 263   2             if(InputData[0]==111){
+ 264   3             DCF2=1;
+ 265   3             DCF1389=1;
+ 266   3             DCF4567=1;
+ 267   3             flag=1;} //IV型测量功能，DCF2断电不通气，其他阀断电通气
+ 268   2             for(i=2;i<4;i++)
+ 269   2                 {templiuliang=(float)(InputData[i]);     //2.3  IV型对应0——100ml 毒气流量、毒气浓度流量
+ 270   3                  templiuliang=templiuliang*40.94+0.5;
+ 271   3                  controlData[i-2]=(int)(templiuliang);    //0,1
+ 272   3                 }
+ 273   2                 for(i=4;i<6;i++)     //4.5   IV型对应0-50L 流量1、流量2
+ 274   2                 {templiuliang=(float)(InputData[i]);
+ 275   3                  templiuliang=templiuliang*8.188+0.5;
+ 276   3                  controlData[i-2]=(int)(templiuliang);//2.3
+ 277   3                 }
+ 278   2                 for(i=6;i<8;i++)          //6.7   IV型对应0-100L   干气、湿气
+ 279   2                 {templiuliang=(float)(InputData[i]);
+ 280   3                  templiuliang=templiuliang*4.094+0.5;
+ 281   3                  controlData[i-2]=(int)(templiuliang);   //4.5
+ 282   3                 }
+ 283   2                 /*实现上位机前面板上的8个流量控制*/
+ 284   2             for(i=0;i<1;i++)//IV型FIC3——毒气流量控制
+ 285   2                 {
+ 286   3                    tempp2=P2|0x07;
+ 287   3                    P2=tempp2&CD4051_U1_U13[i];
+ 288   3              MAX531_U6_Write(controlData[i]);
+ 289   3                c_bit=0;
+ 290   3              b_bit=0;
+ 291   3              a_bit=0;
+ 292   3              en_bit=1;//允许74LS138工作，选通译码器       
+ 293   3              delay(26666);    // 延时26666
+ 294   3              en_bit=0;      // 保持
+ 295   3               }
+ 296   2                 for(i=1;i<2;i++)//IV型FIC4——毒气浓度流量控制
+ 297   2                 {
+ 298   3                    tempp2=P2|0x07;
+ 299   3                    P2=tempp2&CD4051_U1_U13[i];
+ 300   3              MAX531_U6_Write(controlData[i]);
+ 301   3                c_bit=0;
+ 302   3              b_bit=0;
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 6   
+
+ 303   3              a_bit=1;
+ 304   3              en_bit=1;//允许74LS138工作，选通译码器       
+ 305   3              delay(26666);    // 延时26666
+ 306   3              en_bit=0;      // 保持
+ 307   3               }
+ 308   2             for(i=2;i<3;i++)//IV型FIC5——流量1控制
+ 309   2                 {
+ 310   3                  tempp2=P2|0x07;
+ 311   3                  P2=tempp2&CD4051_U1_U13[i];
+ 312   3            MAX531_U6_Write(controlData[i]);
+ 313   3              c_bit=0;
+ 314   3            b_bit=1;
+ 315   3            a_bit=0;
+ 316   3            en_bit=1;//允许74LS138工作，选通译码器       
+ 317   3            delay(26666);    // 延时26666
+ 318   3            en_bit=0;      // 保持
+ 319   3               }
+ 320   2      
+ 321   2             for(i=3;i<4;i++)//IV型FIC6——流量2控制
+ 322   2                 {
+ 323   3                  tempp2=P2|0x07;
+ 324   3                  P2=tempp2&CD4051_U1_U13[i];
+ 325   3            MAX531_U6_Write(controlData[i]);
+ 326   3              c_bit=0;
+ 327   3            b_bit=1;
+ 328   3            a_bit=1;
+ 329   3            en_bit=1;//允许74LS138工作，选通译码器       
+ 330   3            delay(26666);    // 延时26666
+ 331   3            en_bit=0;       // 保持
+ 332   3               }
+ 333   2             for(i=4;i<5;i++)//IV型FIC1——干气流量控制
+ 334   2                 {
+ 335   3                  tempp2=P2|0x07;
+ 336   3                  P2=tempp2&CD4051_U1_U13[i];
+ 337   3            MAX531_U6_Write(controlData[i]);
+ 338   3              c_bit=1;
+ 339   3            b_bit=0;
+ 340   3            a_bit=0;
+ 341   3            en_bit=1;//允许74LS138工作，选通译码器       
+ 342   3            delay(26666);    // 延时26666
+ 343   3            en_bit=0;      // 保持
+ 344   3               }
+ 345   2             for(i=5;i<6;i++)//IV型FIC2——湿气流量控制
+ 346   2                 {
+ 347   3                  tempp2=P2|0x07;
+ 348   3                  P2=tempp2&CD4051_U1_U13[i];
+ 349   3            MAX531_U6_Write(controlData[i]);
+ 350   3              c_bit=1;
+ 351   3            b_bit=0;
+ 352   3            a_bit=1;
+ 353   3            en_bit=1;//允许74LS138工作，选通译码器    
+ 354   3            delay(26666);    // 延时26666
+ 355   3            en_bit=0;      // 保持
+ 356   3               }
+ 357   2            while(flag) { 
+ 358   3            for(i=0;i<6;i++)     //IV型J1-J6六路流量采集并发送
+ 359   3            {
+ 360   4            tempp0=P0|0x07;
+ 361   4            P0=tempp0&CD4051_U1_U13[i];
+ 362   4            AD7705_U2_Reset();
+ 363   4            AD7705_U2_Set();
+ 364   4            AD7705_Data=AD7705_U2_Read();
+C51 COMPILER V9.57.0.0   __________TONGXUN                                                 11/09/2020 13:13:07 PAGE 7   
+
+ 365   4            AD7705_U2_Rst=0;
+ 366   4            OutputData[0]=AD7705_Data/10000;
+ 367   4            AD7705_Data=AD7705_Data%10000;
+ 368   4            OutputData[1]=AD7705_Data/1000;
+ 369   4            AD7705_Data=AD7705_Data%1000;
+ 370   4            OutputData[2]=AD7705_Data/100;
+ 371   4            AD7705_Data=AD7705_Data%100;
+ 372   4            OutputData[3]=AD7705_Data/10;
+ 373   4            OutputData[4]=AD7705_Data%10;
+ 374   4            UartSendChar(OutputData[0]+0x30);
+ 375   4            UartSendChar(OutputData[1]+0x30);
+ 376   4            UartSendChar(OutputData[2]+0x30);
+ 377   4            UartSendChar(OutputData[3]+0x30);
+ 378   4            UartSendChar(OutputData[4]+0x30);
+ 379   4             }    
+ 380   3              for(i=0;i<3;i++)    //IV型压力、温度、湿度变送器采集并发送
+ 381   3             {
+ 382   4              tempp0=P0|0x70;
+ 383   4                P0=tempp0&CD4051_U9[i];
+ 384   4                AD7705_U11_Reset();
+ 385   4            AD7705_U11_Set();
+ 386   4            AD7705_Data=AD7705_U11_Read();
+ 387   4            AD7705_U11_Rst=0;
+ 388   4                OutputData[0]=AD7705_Data/10000;
+ 389   4            AD7705_Data=AD7705_Data%10000;
+ 390   4            OutputData[1]=AD7705_Data/1000;
+ 391   4                AD7705_Data=AD7705_Data%1000;
+ 392   4            OutputData[2]=AD7705_Data/100;
+ 393   4            AD7705_Data=AD7705_Data%100;
+ 394   4            OutputData[3]=AD7705_Data/10;
+ 395   4            OutputData[4]=AD7705_Data%10;
+ 396   4            UartSendChar(OutputData[0]+0x30);
+ 397   4            UartSendChar(OutputData[1]+0x30);
+ 398   4            UartSendChar(OutputData[2]+0x30);
+ 399   4            UartSendChar(OutputData[3]+0x30);
+ 400   4            UartSendChar(OutputData[4]+0x30);
+ 401   4             }
+ 402   3           }
+ 403   2         }
+ 404   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1345    ----
+   CONSTANT SIZE    =   ----    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     85       5
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
